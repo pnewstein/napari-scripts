@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+authors = [
+    {name = "Peter Newstein", email= "peternewstein@gmail.com"}
+]
+name = "napari-scripts"
+requires-python = ">=3.9"
+version = "0.0.1"
+description = "Scripts to run with napari"
+dependencies = [
+    "napari", "napari-czifile2@git+https://github.com/pnewstein/napari-czifile2", "numpy"
+]
