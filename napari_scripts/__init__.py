@@ -18,18 +18,10 @@ from napari.viewer import Viewer
 from napari.types import ImageData, LabelsData, LayerData
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
 
-FLUOROPHORE_LIST = [
-    "AF405", "AF488", "AF546", "AF555", "AF647"
-]
+FLUOROPHORE_LIST = ["AF405", "AF488", "AF546", "AF555", "AF647"]
 
-COLOR_MAP = {
-    "g": "green",
-    "m": "magenta",
-    "k": "gray",
-    "r": "red",
-    "p": "PiYG"
+COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG"}
 
-}
 
 @dataclass(frozen=True)
 class PathScene:
@@ -91,19 +83,23 @@ def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int) -> Viewer:
         viewer.add_image(data=data, **metadata)
     return viewer
 
+
 def bind_key(viewer: Viewer, views: Sequence[str]):
     """
-    Binds the d key so that it toggles between the 
+    Binds the d key so that it toggles between the
     views
     """
     current_ind = 0
+
     def toggle_channel(*args):
         nonlocal current_ind
         _ = args
         set_view(viewer, views[current_ind])
         current_ind = (current_ind + 1) % len(views)
+
     viewer.bind_key(key="d", func=toggle_channel)
     toggle_channel()
+
 
 def set_view(viewer: Viewer, view_str: str):
     """
@@ -116,16 +112,15 @@ def set_view(viewer: Viewer, view_str: str):
         if char == "_":
             layer.visible = False
         else:
-            layer.colormap = COLOR_MAP[char] 
+            layer.colormap = COLOR_MAP[char]
             layer.visible = True
+
 
 def img_layer(viewer: Viewer, index: int):
     """
     gets the index'th most red image layer
     """
-    img_layers = [
-        layer for layer in viewer.layers if isinstance(layer, Image)
-    ]
+    img_layers = [layer for layer in viewer.layers if isinstance(layer, Image)]
     pattern = re.compile(r"S\d+\s(.*)-T\d+")
     fluorophores: dict[str, Image] = {}
     for layer in img_layers:
@@ -138,7 +133,12 @@ def img_layer(viewer: Viewer, index: int):
     return fluorophores[this_flurophore[index]]
 
 
-def burn_in_contrast(image: np.ndarray, contrast_min: float, contrast_max: float, knee: float | None = None) -> np.ndarray:
+def burn_in_contrast(
+    image: np.ndarray,
+    contrast_min: float,
+    contrast_max: float,
+    knee: float | None = None,
+) -> np.ndarray:
     """
     returns an array with the contrast burned in so that there are 3 linear segments
     knee is a float between 0 and 1 specifies the ratio of intensity at contrast_min vs max_intensity.
@@ -151,7 +151,7 @@ def burn_in_contrast(image: np.ndarray, contrast_min: float, contrast_max: float
     assert image_max > contrast_max > contrast_min
     image = image.astype(float_type)
     if knee is None:
-        knee = .05
+        knee = 0.05
     below_knee = image < contrast_min
     above_knee = image > contrast_max
     between_knee = np.logical_not(np.logical_or(below_knee, above_knee))
@@ -159,11 +159,17 @@ def burn_in_contrast(image: np.ndarray, contrast_min: float, contrast_max: float
     begining_slope = 255 * knee / contrast_min
     np.multiply(float_type(begining_slope), image, out=out_array, where=below_knee)
     middle_slope = 255 * (1 - 2 * knee) / (contrast_max - contrast_min)
-    middle_intercept = 255 * (-contrast_min + knee * contrast_min + knee * contrast_max) / (contrast_max - contrast_min)
+    middle_intercept = (
+        255
+        * (-contrast_min + knee * contrast_min + knee * contrast_max)
+        / (contrast_max - contrast_min)
+    )
     np.multiply(float_type(middle_slope), image, out=out_array, where=between_knee)
     np.add(float_type(middle_intercept), out_array, out=out_array, where=between_knee)
-    ending_slope = 255 *knee / (image_max - contrast_max)
-    ending_intercept = 255 * (image_max - contrast_max - knee * image_max) / (image_max - contrast_max)
+    ending_slope = 255 * knee / (image_max - contrast_max)
+    ending_intercept = (
+        255 * (image_max - contrast_max - knee * image_max) / (image_max - contrast_max)
+    )
     np.multiply(float_type(ending_slope), image, out=out_array, where=above_knee)
     np.add(float_type(ending_intercept), out_array, out=out_array, where=above_knee)
     return out_array.astype(np.uint8)
@@ -171,17 +177,25 @@ def burn_in_contrast(image: np.ndarray, contrast_min: float, contrast_max: float
 
 class AnalysisStep(Protocol):
     """
-    A step in analysis which returns the image data and adds it to the 
+    A step in analysis which returns the image data and adds it to the
     """
+
     def __call__(self, viewer: Viewer, scene_index: int, *args, **kwargs) -> ImageData:
         ...
 
 
-def _make_analysis_step(function: Callable[..., ImageData], doc: str, out_type: Literal["Image",  "Labels"] = "Image") -> AnalysisStep:
+def _make_analysis_step(
+    function: Callable[..., ImageData],
+    doc: str,
+    out_type: Literal["Image", "Labels"] = "Image",
+) -> AnalysisStep:
     """
     takes a function that takes in image data and returns an AnalysisStep
     """
-    def out_function(viewer: Viewer, layer_index: int, *args, **kwargs) -> LabelsData | ImageData:
+
+    def out_function(
+        viewer: Viewer, layer_index: int, *args, **kwargs
+    ) -> LabelsData | ImageData:
         if layer_index > 0:
             layer = img_layer(viewer, layer_index)
         else:
@@ -195,6 +209,7 @@ def _make_analysis_step(function: Callable[..., ImageData], doc: str, out_type: 
         new_layer.translate = layer.translate
         new_layer.scale = layer.scale
         return out_data
+
     out_function.__doc__ = doc
     return out_function
 
@@ -206,6 +221,16 @@ def print_contrast_limits(viewer: Viewer):
     contrast_min, contrast_max = viewer.layers[-1].contrast_limits
     print(f"{(contrast_min, contrast_max)=}")
 
-blur = _make_analysis_step(nsbatwm.gaussian_blur, "does a gaussian_blur with sigma as a kwarg")
-contrast = _make_analysis_step(burn_in_contrast, "Makes a new layer with enhanced contrast kwargs: contrast_min: float, contrast_max: float, knee: float | None=None")
-label = _make_analysis_step(nsbatwm.voronoi_otsu_labeling, "spot_sigma: float=2, outline_sigma: float=2", out_type="Labels")
+
+blur = _make_analysis_step(
+    nsbatwm.gaussian_blur, "does a gaussian_blur with sigma as a kwarg"
+)
+contrast = _make_analysis_step(
+    burn_in_contrast,
+    "Makes a new layer with enhanced contrast kwargs: contrast_min: float, contrast_max: float, knee: float | None=None",
+)
+label = _make_analysis_step(
+    nsbatwm.voronoi_otsu_labeling,
+    "spot_sigma: float=2, outline_sigma: float=2",
+    out_type="Labels",
+)
