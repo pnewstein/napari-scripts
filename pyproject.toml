@@ -11,5 +11,5 @@ requires-python = ">=3.9"
 version = "0.0.1"
 description = "Scripts to run with napari"
 dependencies = [
-    "napari", "napari-czifile2@git+https://github.com/pnewstein/napari-czifile2", "numpy"
+    "napari", "napari-czifile2@git+https://github.com/pnewstein/napari-czifile2", "numpy", "napari-segment-blobs-and-things-with-membranes"
 ]
