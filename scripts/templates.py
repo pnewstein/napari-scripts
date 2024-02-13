@@ -43,7 +43,7 @@ viewer.window.add_dock_widget(count_3d)
 # Save the file when done
 input("press enter to save")
 
-count_3d.save_points_to_df().to_csv(f"{rand_key_path.parent}_{i}.csv")
+count_3d.save_points_to_df().to_csv(f"{rand_key_path}_{i}.csv")
 
 ## bulk czi mips
 paths = [

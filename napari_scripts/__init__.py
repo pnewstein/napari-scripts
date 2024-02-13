@@ -19,10 +19,41 @@ from napari.types import ImageData, LabelsData, LayerData
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
 import pandas as pd
 
-FLUOROPHORE_LIST = ["AF405", "AF488", "RhReX", "AF546",  "tdTom", "AF555", "AF647"]
+FLUOROPHORE_LIST_PATH = Path(__file__).parent / "fluorophore_list.json"
+
 
 COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG"}
 
+def get_fluorophore_list() -> list[str]:
+    """
+    gets fluorophore_list from disk
+    """
+    return json.loads(FLUOROPHORE_LIST_PATH.read_text("utf-8"))
+
+
+def set_fluorophoe_list(fluorophore_list: list[str]):
+    """
+    sets fluorophore_list to disk
+    """
+    FLUOROPHORE_LIST_PATH.write_text(json.dumps(fluorophore_list), "utf-8")
+
+
+CZI_CHAN_PATTERN = re.compile(r"^(S\d+\s)?(.*?)(-T\d+)?$")
+def parse_channel_name(channel_name: str) -> tuple[str, str, str]:
+    """
+    parses a chanell name as created by napri czifile2 into
+    scene_str, fluor_str, track_str
+    eg:
+    parse_channel_name("S05 AF546-T2")
+    # ('S05 ', 'AF546', '-T2'
+    raises ValueError if channel_name is invalid
+    """
+    match = CZI_CHAN_PATTERN.match(channel_name)
+    if not match:
+        raise ValueError(f"{channel_name} is invalid")
+    scene, fluor, track =  match.groups()
+    return scene, fluor, track
+    
 
 @dataclass(frozen=True)
 class PathScene:
@@ -90,12 +121,9 @@ def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int, hide_scene_num=
             layers = [add_image_out]
         for layer in layers:
             if hide_scene_num:
-                pattern = re.compile(r"S(\d+)\s.*-T\d+")
-                match = pattern.match(layer.name)
-                if match is None:
-                    raise NotImplementedError()
+                _, fluor, track = parse_channel_name(layer.name)
+                layer.name = "".join(("S420", fluor, track))
                 
-                layer.name = "420".join(layer.name.split(match.group(1)))
     return viewer
 
 
@@ -130,24 +158,43 @@ def set_view(viewer: Viewer, view_str: str):
             layer.colormap = COLOR_MAP[char]
             layer.visible = True
 
+def add_fluor(fluor: str, known_fluors: list[str]) -> list[str]:
+    """
+    use user input to add a fluor to a flo
+    """
+    n_known_fluors = len(known_fluors)
+    for i, this_fluor in enumerate(known_fluors):
+        print(f"[{i}] {this_fluor}", end=" ", flush=False)
+    print(f"[{n_known_fluors}]")
+    position = int(input(f"Where do you want to insert {fluor}?\t"))
+    if position == n_known_fluors:
+        known_fluors.append(fluor)
+    else:
+        known_fluors.insert(position, fluor)
+    set_fluorophoe_list(known_fluors)
+    return known_fluors
+
+
 def _get_fluorophers_image_series(viewer: Viewer) -> pd.Series:
     """
     returns a series with fluorophore name as key and a column with the viewer
     """
-    pattern = re.compile(r"S\d+\s(.*?)(-T\d+)?$")
     img_layers = [layer for layer in viewer.layers if isinstance(layer, Image)]
     fluorophores_dict: dict[str, Image] = {}
+    known_fluors = get_fluorophore_list()
     for layer in img_layers:
-        match = pattern.match(layer.name)
-        if match is None:
-            # probaby not a czi file layer
-            continue
-        fluorophores_dict[match.group(1)] = layer
-    out_series = pd.Series(fluorophores_dict, index=sorted(fluorophores_dict.keys(), key=FLUOROPHORE_LIST.index))
+        _, fluor, _ = parse_channel_name(layer.name)
+        fluorophores_dict[fluor] = layer
+        if fluor not in known_fluors:
+            add_fluor(fluor, known_fluors)
+    if len(fluorophores_dict) == 0:
+        raise ValueError("No czi channels found")
+    # add new fluor to list
+    out_series = pd.Series(fluorophores_dict, index=sorted(fluorophores_dict.keys(), key=known_fluors.index))
     return out_series
 
 
-def img_layer(viewer: Viewer, index: int):
+def img_layer(viewer: Viewer, index: int) -> Image:
     """
     gets the index'th most red image layer
     """
