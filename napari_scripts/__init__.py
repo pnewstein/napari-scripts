@@ -22,7 +22,7 @@ import pandas as pd
 FLUOROPHORE_LIST_PATH = Path(__file__).parent / "fluorophore_list.json"
 
 
-COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG"}
+COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG", "c": "cyan"}
 
 def get_fluorophore_list() -> list[str]:
     """
