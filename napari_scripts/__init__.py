@@ -52,6 +52,9 @@ def parse_channel_name(channel_name: str) -> tuple[str, str, str]:
     if not match:
         raise ValueError(f"{channel_name} is invalid")
     scene, fluor, track =  match.groups()
+    # if only matched flouophore
+    if not scene and not track:
+        raise ValueError(f"{channel_name} is invalid")
     return scene, fluor, track
     
 
@@ -121,8 +124,9 @@ def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int, hide_scene_num=
             layers = [add_image_out]
         for layer in layers:
             if hide_scene_num:
-                _, fluor, track = parse_channel_name(layer.name)
-                layer.name = "".join(("S420", fluor, track))
+                scene, fluor, track = parse_channel_name(layer.name)
+                if scene:
+                    layer.name = "".join(("S420", fluor, track))
                 
     return viewer
 
@@ -183,7 +187,11 @@ def _get_fluorophers_image_series(viewer: Viewer) -> pd.Series:
     fluorophores_dict: dict[str, Image] = {}
     known_fluors = get_fluorophore_list()
     for layer in img_layers:
-        _, fluor, _ = parse_channel_name(layer.name)
+        try:
+            _, fluor, _ = parse_channel_name(layer.name)
+        except ValueError:
+            # one of your image layers is not from zeiss
+            continue
         fluorophores_dict[fluor] = layer
         if fluor not in known_fluors:
             add_fluor(fluor, known_fluors)
@@ -262,7 +270,7 @@ def burn_in_contrast(
     above_knee = image > contrast_max
     between_knee = np.logical_not(np.logical_or(below_knee, above_knee))
     out_array = np.zeros(image.shape).astype(float_type)
-    begining_slope = 255 * knee / contrast_min
+    begining_slope = 255 * knee / contrast_min if contrast_min != 0 else 0
     np.multiply(float_type(begining_slope), image, out=out_array, where=below_knee)
     middle_slope = 255 * (1 - 2 * knee) / (contrast_max - contrast_min)
     middle_intercept = (
@@ -286,7 +294,8 @@ class AnalysisStep(Protocol):
     A step in analysis which returns the image data and adds it to the
     """
 
-    def __call__(self, viewer: Viewer, scene_index: int, *args, **kwargs) -> ImageData:
+    def __call__(self, viewer: Viewer, scene_index: int, 
+                 name: str | None, *args, **kwargs) -> ImageData:
         ...
 
 
@@ -300,17 +309,19 @@ def _make_analysis_step(
     """
 
     def out_function(
-        viewer: Viewer, layer_index: int, *args, **kwargs
+        viewer: Viewer, layer_index: int, *args, name: str | None = None, **kwargs, 
     ) -> LabelsData | ImageData:
-        if layer_index > 0:
+        if name is None:
+            name = function.__name__
+        if layer_index >= 0:
             layer = img_layer(viewer, layer_index)
         else:
             layer = viewer.layers[layer_index]
         out_data = function(layer.data, *args, **kwargs)
         if out_type == "Image":
-            new_layer = viewer.add_image(out_data, name=function.__name__)
+            new_layer = viewer.add_image(out_data, name=name)
         elif out_type == "Labels":
-            new_layer = viewer.add_labels(out_data, name=function.__name__)
+            new_layer = viewer.add_labels(out_data, name=name)
             new_layer.contour = 1
         new_layer.translate = layer.translate
         new_layer.scale = layer.scale
