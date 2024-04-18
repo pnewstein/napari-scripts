@@ -13,3 +13,6 @@ description = "Scripts to run with napari"
 dependencies = [
     "napari", "napari-3d-counter", "napari-czifile2@git+https://github.com/pnewstein/napari-czifile2", "numpy", "napari-segment-blobs-and-things-with-membranes"
 ]
+
+[tool.setuptools.package-data]
+napari_scripts = ["*.json"]
