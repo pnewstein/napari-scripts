@@ -11,17 +11,49 @@ import json
 import re
 
 import numpy as np
-from napari_czifile2 import reader_function_with_args
+from napari_czifile2 import reader_function_with_args, SceneIndexOutOfRange
 from napari_czifile2.io import CZISceneFile
 from napari.layers import Image
 from napari.viewer import Viewer
 from napari.types import ImageData, LabelsData, LayerData
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
+import pandas as pd
 
-FLUOROPHORE_LIST = ["AF405", "AF488", "AF546", "AF555", "AF647"]
+FLUOROPHORE_LIST_PATH = Path(__file__).parent / "fluorophore_list.json"
 
-COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG"}
 
+COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG", "c": "cyan"}
+
+def get_fluorophore_list() -> list[str]:
+    """
+    gets fluorophore_list from disk
+    """
+    return json.loads(FLUOROPHORE_LIST_PATH.read_text("utf-8"))
+
+
+def set_fluorophoe_list(fluorophore_list: list[str]):
+    """
+    sets fluorophore_list to disk
+    """
+    FLUOROPHORE_LIST_PATH.write_text(json.dumps(fluorophore_list), "utf-8")
+
+
+CZI_CHAN_PATTERN = re.compile(r"^(S\d+\s)?(.*?)(-T\d+)?$")
+def parse_channel_name(channel_name: str) -> tuple[str, str, str]:
+    """
+    parses a chanell name as created by napri czifile2 into
+    scene_str, fluor_str, track_str
+    eg:
+    parse_channel_name("S05 AF546-T2")
+    # ('S05 ', 'AF546', '-T2'
+    raises ValueError if channel_name is invalid
+    """
+    match = CZI_CHAN_PATTERN.match(channel_name)
+    if not match:
+        raise ValueError(f"{channel_name} is invalid")
+    scene, fluor, track =  match.groups()
+    return scene, fluor, track
+    
 
 @dataclass(frozen=True)
 class PathScene:
@@ -54,6 +86,8 @@ def generate_random_key(key_path: Path, image_paths: list[Path]):
     and saves it to key_path for use in
     get_random_viewer
     """
+    if key_path.exists():
+        raise FileExistsError(f"refusing to overwrite {key_path}")
     path_scenes: list[PathScene] = []
     for path in image_paths:
         n_scenes = CZISceneFile.get_num_scenes(path)
@@ -69,10 +103,10 @@ def get_random_viewer(key_path: Path, img_num: int) -> Viewer:
     this_path_scene = PathScene.from_tuple(
         json.loads(key_path.read_text("utf-8"))[img_num]
     )
-    return get_viewer_at_czi_scene(this_path_scene.path, this_path_scene.scene)
+    return get_viewer_at_czi_scene(this_path_scene.path, this_path_scene.scene, hide_scene_num=True)
 
 
-def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int) -> Viewer:
+def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int, hide_scene_num=False) -> Viewer:
     """
     gets a viewer with the czi file opened at scene
     """
@@ -80,7 +114,16 @@ def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int) -> Viewer:
     for data, metadata, _ in reader_function_with_args(
         czi_file_path, scene_index=scene_num, next_scene_inds=[]
     ):
-        viewer.add_image(data=data, **metadata)
+        add_image_out = viewer.add_image(data=data, **metadata)
+        if isinstance(add_image_out, list):
+            layers = add_image_out
+        else:
+            layers = [add_image_out]
+        for layer in layers:
+            if hide_scene_num:
+                _, fluor, track = parse_channel_name(layer.name)
+                layer.name = "".join(("S420", fluor, track))
+                
     return viewer
 
 
@@ -97,7 +140,7 @@ def bind_key(viewer: Viewer, views: Sequence[str]):
         set_view(viewer, views[current_ind])
         current_ind = (current_ind + 1) % len(views)
 
-    viewer.bind_key(key="d", func=toggle_channel)
+    viewer.bind_key(key="d", func=toggle_channel, overwrite=True)
     toggle_channel()
 
 
@@ -115,22 +158,85 @@ def set_view(viewer: Viewer, view_str: str):
             layer.colormap = COLOR_MAP[char]
             layer.visible = True
 
+def add_fluor(fluor: str, known_fluors: list[str]) -> list[str]:
+    """
+    use user input to add a fluor to a flo
+    """
+    n_known_fluors = len(known_fluors)
+    for i, this_fluor in enumerate(known_fluors):
+        print(f"[{i}] {this_fluor}", end=" ", flush=False)
+    print(f"[{n_known_fluors}]")
+    position = int(input(f"Where do you want to insert {fluor}?\t"))
+    if position == n_known_fluors:
+        known_fluors.append(fluor)
+    else:
+        known_fluors.insert(position, fluor)
+    set_fluorophoe_list(known_fluors)
+    return known_fluors
 
-def img_layer(viewer: Viewer, index: int):
+
+def _get_fluorophers_image_series(viewer: Viewer) -> pd.Series:
+    """
+    returns a series with fluorophore name as key and a column with the viewer
+    """
+    img_layers = [layer for layer in viewer.layers if isinstance(layer, Image)]
+    fluorophores_dict: dict[str, Image] = {}
+    known_fluors = get_fluorophore_list()
+    for layer in img_layers:
+        _, fluor, _ = parse_channel_name(layer.name)
+        fluorophores_dict[fluor] = layer
+        if fluor not in known_fluors:
+            add_fluor(fluor, known_fluors)
+    if len(fluorophores_dict) == 0:
+        raise ValueError("No czi channels found")
+    # add new fluor to list
+    out_series = pd.Series(fluorophores_dict, index=sorted(fluorophores_dict.keys(), key=known_fluors.index))
+    return out_series
+
+
+def img_layer(viewer: Viewer, index: int) -> Image:
     """
     gets the index'th most red image layer
     """
-    img_layers = [layer for layer in viewer.layers if isinstance(layer, Image)]
-    pattern = re.compile(r"S\d+\s(.*)-T\d+")
-    fluorophores: dict[str, Image] = {}
-    for layer in img_layers:
-        match = pattern.match(layer.name)
-        if match is None:
-            # probaby not a czi file layer
+    fluorophores = _get_fluorophers_image_series(viewer)
+    return fluorophores.iloc[index]
+
+
+def save_mip(viewer: Viewer, out_path: Path, zrange: tuple[int| None, int | None] = (None, None), view_str: str | None = None) -> np.array:
+    """
+    Saves a max intensity projection over z values specified in zrange to out_path
+    """
+    # clear the scene before adding new layers
+    for layer in viewer.layers:
+        layer.visible = False
+    fluorophores = _get_fluorophers_image_series(viewer)
+    if view_str is None:
+        mip_layers: list[Image | None] = fluorophores.to_list()
+    else:
+        mip_layers = []
+        for i, char in enumerate(view_str):
+            if char == "_":
+                mip_layers.append(None)
+            else:
+                mip_layers.append(img_layer(viewer, i))
+    for i, layer in enumerate(mip_layers):
+        if layer is None:
             continue
-        fluorophores[match.group(1)] = layer
-    this_flurophore = sorted(fluorophores.keys(), key=FLUOROPHORE_LIST.index)
-    return fluorophores[this_flurophore[index]]
+        assert layer.data.shape[0] == 1
+        mip = layer.data[0, slice(*zrange), :, :].max(axis=0)
+        if view_str is None:
+            colormap = layer.colormap
+        else:
+            colormap = COLOR_MAP[view_str[i]]
+        viewer.add_image(mip[np.newaxis, np.newaxis, :, :], scale=layer.scale, translate=layer.translate, colormap=colormap, blending="additive", name=f"mip_{layer.name}")
+    # take image
+    dims_step = list(viewer.dims.current_step)
+    dims_step[1] = 0 
+    viewer.dims.current_step = dims_step
+    return viewer.screenshot(flash=False, path=out_path)
+
+
+    
 
 
 def burn_in_contrast(
