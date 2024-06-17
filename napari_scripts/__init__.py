@@ -22,7 +22,7 @@ import pandas as pd
 FLUOROPHORE_LIST_PATH = Path(__file__).parent / "fluorophore_list.json"
 
 
-COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG", "c": "cyan"}
+COLOR_MAP = {"g": "green", "m": "magenta", "k": "gray", "r": "red", "p": "PiYG", "c": "cyan", "y": "yellow"}
 
 def get_fluorophore_list() -> list[str]:
     """
@@ -96,6 +96,7 @@ def generate_random_key(key_path: Path, image_paths: list[Path]):
         n_scenes = CZISceneFile.get_num_scenes(path)
         path_scenes.extend(PathScene(path, i) for i in range(n_scenes))
     random.shuffle(path_scenes)
+    print(len(path_scenes))
     key_path.write_text(json.dumps([ps.to_tuple() for ps in path_scenes], indent=4))
 
 
@@ -126,8 +127,7 @@ def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int, hide_scene_num=
             if hide_scene_num:
                 scene, fluor, track = parse_channel_name(layer.name)
                 if scene:
-                    layer.name = "".join(("S420", fluor, track))
-                
+                    layer.name = "".join(("S420 ", fluor, track))
     return viewer
 
 
@@ -303,13 +303,14 @@ def _make_analysis_step(
     function: Callable[..., ImageData],
     doc: str,
     out_type: Literal["Image", "Labels"] = "Image",
+    additive=False,
 ) -> AnalysisStep:
     """
     takes a function that takes in image data and returns an AnalysisStep
     """
 
     def out_function(
-        viewer: Viewer, layer_index: int, *args, name: str | None = None, **kwargs, 
+        viewer: Viewer, layer_index: int, *args, name: str | None = None,  **kwargs, 
     ) -> LabelsData | ImageData:
         if name is None:
             name = function.__name__
@@ -320,6 +321,8 @@ def _make_analysis_step(
         out_data = function(layer.data, *args, **kwargs)
         if out_type == "Image":
             new_layer = viewer.add_image(out_data, name=name)
+            if additive:
+                new_layer.additive = True
         elif out_type == "Labels":
             new_layer = viewer.add_labels(out_data, name=name)
             new_layer.contour = 1
@@ -350,4 +353,11 @@ label = _make_analysis_step(
     nsbatwm.voronoi_otsu_labeling,
     "spot_sigma: float=2, outline_sigma: float=2",
     out_type="Labels",
+)
+
+tophat = _make_analysis_step(
+    nsbatwm.white_tophat,
+    "Does a white tophat to make more clear puncta: radius: float=2",
+    out_type="Image",
+    additive=True
 )
