@@ -355,6 +355,11 @@ label = _make_analysis_step(
     out_type="Labels",
 )
 
+threshold = _make_analysis_step(
+    nsbatwm.threshold_otsu,
+    "spot_sigma: float=2, outline_sigma: float=2",
+    out_type="Labels",
+)
 tophat = _make_analysis_step(
     nsbatwm.white_tophat,
     "Does a white tophat to make more clear puncta: radius: float=2",
