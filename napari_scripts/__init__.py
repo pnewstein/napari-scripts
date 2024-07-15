@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import random
 import json
 import re
+import os
 
 import numpy as np
 from napari_czifile2 import reader_function_with_args, SceneIndexOutOfRange
@@ -16,8 +17,10 @@ from napari_czifile2.io import CZISceneFile
 from napari.layers import Image
 from napari.viewer import Viewer
 from napari.types import ImageData, LabelsData, LayerData
+import napari
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
 import pandas as pd
+from tifffile import TiffFile, TiffFrame
 
 FLUOROPHORE_LIST_PATH = Path(__file__).parent / "fluorophore_list.json"
 
@@ -37,26 +40,6 @@ def set_fluorophoe_list(fluorophore_list: list[str]):
     """
     FLUOROPHORE_LIST_PATH.write_text(json.dumps(fluorophore_list), "utf-8")
 
-
-CZI_CHAN_PATTERN = re.compile(r"^(S\d+\s)?(.*?)(-T\d+)?$")
-def parse_channel_name(channel_name: str) -> tuple[str, str, str]:
-    """
-    parses a chanell name as created by napri czifile2 into
-    scene_str, fluor_str, track_str
-    eg:
-    parse_channel_name("S05 AF546-T2")
-    # ('S05 ', 'AF546', '-T2'
-    raises ValueError if channel_name is invalid
-    """
-    match = CZI_CHAN_PATTERN.match(channel_name)
-    if not match:
-        raise ValueError(f"{channel_name} is invalid")
-    scene, fluor, track =  match.groups()
-    # if only matched flouophore
-    if not scene and not track:
-        raise ValueError(f"{channel_name} is invalid")
-    return scene, fluor, track
-    
 
 @dataclass(frozen=True)
 class PathScene:
@@ -82,18 +65,22 @@ class PathScene:
         return cls(path=Path(path_str), scene=scene)
 
 
-def generate_random_key(key_path: Path, image_paths: list[Path]):
+def generate_random_key(key_path: Path, image_paths: Iterable[Path]):
     """
     creates a list of tuples of
     (file_path (str), scene_num (int))
     and saves it to key_path for use in
     get_random_viewer
     """
+    # do work on the flyroom pc
     if key_path.exists():
         raise FileExistsError(f"refusing to overwrite {key_path}")
     path_scenes: list[PathScene] = []
     for path in image_paths:
-        n_scenes = CZISceneFile.get_num_scenes(path)
+        if key_path.suffix == ".czi":
+            n_scenes = CZISceneFile.get_num_scenes(path)
+        else:
+            n_scenes = 1
         path_scenes.extend(PathScene(path, i) for i in range(n_scenes))
     random.shuffle(path_scenes)
     print(len(path_scenes))
@@ -107,28 +94,58 @@ def get_random_viewer(key_path: Path, img_num: int) -> Viewer:
     this_path_scene = PathScene.from_tuple(
         json.loads(key_path.read_text("utf-8"))[img_num]
     )
-    return get_viewer_at_czi_scene(this_path_scene.path, this_path_scene.scene, hide_scene_num=True)
+    return get_viewer_from_file(this_path_scene.path, this_path_scene.scene, display_num=img_num)
 
 
-def get_viewer_at_czi_scene(czi_file_path: Path, scene_num: int, hide_scene_num=False) -> Viewer:
+
+def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None) -> Viewer:
     """
-    gets a viewer with the czi file opened at scene
+    gets a viewer with the file opened at scene. tries reading czis or tiffs
     """
-    viewer = Viewer()
-    for data, metadata, _ in reader_function_with_args(
-        czi_file_path, scene_index=scene_num, next_scene_inds=[]
-    ):
-        add_image_out = viewer.add_image(data=data, **metadata)
-        if isinstance(add_image_out, list):
-            layers = add_image_out
-        else:
-            layers = [add_image_out]
-        for layer in layers:
-            if hide_scene_num:
-                scene, fluor, track = parse_channel_name(layer.name)
-                if scene:
-                    layer.name = "".join(("S420 ", fluor, track))
-    return viewer
+    def _xy_voxel_size(tags, key):
+        assert key in ['XResolution', 'YResolution']
+        if key in tags:
+            num_pixels, units = tags[key].value
+            return units / num_pixels
+        # return default
+        return 1.
+    if image_path.parts[:3] == ('/', 'Volumes', 'DoeLab65TB') and os.name == "nt":
+        image_path = Path("//10.128.169.11/DoeLab65TB") / Path(*image_path.parts[3:])
+        assert image_path.exists()
+    if display_num is None:
+        display_num = scene_num
+    viewer = Viewer(title=f"napari scene {display_num}")
+    if image_path.suffix == ".czi":
+        for data, metadata, _ in reader_function_with_args(
+            image_path, scene_index=scene_num, next_scene_inds=[]
+        ):
+            add_image_out = viewer.add_image(data=data, **metadata)
+            if isinstance(add_image_out, list):
+                layers = add_image_out
+            else:
+                layers = [add_image_out]
+        return viewer
+    if image_path.suffix in (".tiff", ".tif"):
+        with TiffFile(image_path) as tif:
+            series = tif.series[scene_num]
+            axes = series.get_axes()
+            assert axes == "ZCYX"
+            if tif.imagej_metadata is not None:
+                zdim = tif.imagej_metadata.get("spacing", 1.)
+            else:
+                zdim = 1.
+            first_page = series.pages[0]
+            if first_page is None:
+                raise ValueError("Could not read resolution")
+            if isinstance(first_page, TiffFrame):
+                raise ValueError("Could not read resolution")
+            ydim = _xy_voxel_size(first_page.tags, "YResolution")
+            xdim = _xy_voxel_size(first_page.tags, "XResolution")
+            data = series.asarray()
+        names = [f"raw-{f}-channel" for f in range(data.shape[1])]
+        viewer.add_image(data, channel_axis=1, scale=(zdim, ydim, xdim), name=names)
+        return viewer
+    raise ValueError(f"{image_path.suffix} not known")
 
 
 def bind_key(viewer: Viewer, views: Sequence[str]):
@@ -162,6 +179,7 @@ def set_view(viewer: Viewer, view_str: str):
             layer.colormap = COLOR_MAP[char]
             layer.visible = True
 
+
 def add_fluor(fluor: str, known_fluors: list[str]) -> list[str]:
     """
     use user input to add a fluor to a flo
@@ -186,19 +204,24 @@ def _get_fluorophers_image_series(viewer: Viewer) -> pd.Series:
     img_layers = [layer for layer in viewer.layers if isinstance(layer, Image)]
     fluorophores_dict: dict[str, Image] = {}
     known_fluors = get_fluorophore_list()
+    # add integers in case flour is not known
+    int_padded_known_fluors = [str(i) for i in range(50)] + known_fluors
     for layer in img_layers:
-        try:
-            _, fluor, _ = parse_channel_name(layer.name)
-        except ValueError:
-            # one of your image layers is not from zeiss
+        regex_match = re.match(f"^raw-(.+)-channel$", layer.name)
+        if regex_match is None:
             continue
+        fluor = regex_match.group(1)
+        try:
+            int(fluor)
+        except:
+            pass
         fluorophores_dict[fluor] = layer
-        if fluor not in known_fluors:
+        if fluor not in int_padded_known_fluors:
             add_fluor(fluor, known_fluors)
     if len(fluorophores_dict) == 0:
         raise ValueError("No czi channels found")
     # add new fluor to list
-    out_series = pd.Series(fluorophores_dict, index=sorted(fluorophores_dict.keys(), key=known_fluors.index))
+    out_series = pd.Series(fluorophores_dict, index=sorted(fluorophores_dict.keys(), key=int_padded_known_fluors.index))
     return out_series
 
 
@@ -242,9 +265,6 @@ def save_mip(viewer: Viewer, out_path: Path, zrange: tuple[int| None, int | None
     dims_step[1] = 0 
     viewer.dims.current_step = dims_step
     return viewer.screenshot(flash=False, path=out_path)
-
-
-    
 
 
 def burn_in_contrast(
@@ -294,7 +314,7 @@ class AnalysisStep(Protocol):
     A step in analysis which returns the image data and adds it to the
     """
 
-    def __call__(self, viewer: Viewer, scene_index: int, 
+    def __call__(self, viewer: Viewer, layer: int | napari.layers.Layer, 
                  name: str | None, *args, **kwargs) -> ImageData:
         ...
 
@@ -310,14 +330,16 @@ def _make_analysis_step(
     """
 
     def out_function(
-        viewer: Viewer, layer_index: int, *args, name: str | None = None,  **kwargs, 
+        viewer: Viewer, layer: int | napari.layers.Layer, *args, name: str | None = None,  **kwargs, 
     ) -> LabelsData | ImageData:
         if name is None:
             name = function.__name__
-        if layer_index >= 0:
-            layer = img_layer(viewer, layer_index)
+        if isinstance(layer, napari.layers.Layer):
+            pass
+        elif layer >= 0:
+            layer = img_layer(viewer, layer)
         else:
-            layer = viewer.layers[layer_index]
+            layer = viewer.layers[layer]
         out_data = function(layer.data, *args, **kwargs)
         if out_type == "Image":
             new_layer = viewer.add_image(out_data, name=name)

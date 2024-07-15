@@ -12,7 +12,7 @@ path = Path("/Users/peternewstein/Downloads/Data-backup/488cmyc555pmad647eve_25c
 # manual for loop
 i = 4
 
-viewer = ns.get_viewer_at_czi_scene(path, i)
+viewer = ns.get_viewer_from_file(path, i)
 ns.bind_key(viewer, ["gm_", "__p"])
 
 count_3d = Count3D(

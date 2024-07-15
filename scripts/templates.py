@@ -27,7 +27,7 @@ viewer = ns.get_random_viewer(rand_key_path, i)
 
 # or read scene i from the czi_path
 i = 0 
-viewer = ns.get_viewer_at_czi_scene(czi_path, i, hide_scene_num=False)
+viewer = ns.get_viewer_from_file(czi_path, i, hide_scene_num=False)
 
 # set up the keybindings for the different views
 ns.bind_key(viewer, ["__mg", "_k__"])
