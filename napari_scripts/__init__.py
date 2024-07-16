@@ -77,6 +77,7 @@ def generate_random_key(key_path: Path, image_paths: Iterable[Path]):
         raise FileExistsError(f"refusing to overwrite {key_path}")
     path_scenes: list[PathScene] = []
     for path in image_paths:
+        path = catch_lab_server_paths(path)
         if key_path.suffix == ".czi":
             n_scenes = CZISceneFile.get_num_scenes(path)
         else:
@@ -97,6 +98,17 @@ def get_random_viewer(key_path: Path, img_num: int) -> Viewer:
     return get_viewer_from_file(this_path_scene.path, this_path_scene.scene, display_num=img_num)
 
 
+def catch_lab_server_paths(path: Path) -> Path:
+    """
+    if a path is pointing to the unix lab server, converts to the lab server from windows
+    else does nothing
+    """
+    if path.parts[:3] == ('\\', 'Volumes', 'DoeLab65TB') and os.name == "nt":
+        image_path =  Path("//10.128.169.11/DoeLab65TB") / Path(*path.parts[3:])
+        assert image_path.exists()
+        return image_path
+    return path
+
 
 def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None) -> Viewer:
     """
@@ -109,9 +121,7 @@ def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None) -> 
             return units / num_pixels
         # return default
         return 1.
-    if image_path.parts[:3] == ('/', 'Volumes', 'DoeLab65TB') and os.name == "nt":
-        image_path = Path("//10.128.169.11/DoeLab65TB") / Path(*image_path.parts[3:])
-        assert image_path.exists()
+    image_path = catch_lab_server_paths(image_path)
     if display_num is None:
         display_num = scene_num
     viewer = Viewer(title=f"napari scene {display_num}")
