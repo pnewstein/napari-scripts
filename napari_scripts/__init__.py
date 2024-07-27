@@ -12,15 +12,18 @@ import re
 import os
 
 import numpy as np
-from napari_czifile2 import reader_function_with_args, SceneIndexOutOfRange
+from napari_czifile2 import reader_function_with_args
 from napari_czifile2.io import CZISceneFile
-from napari.layers import Image
+from napari.layers import Image, Labels, Layer
 from napari.viewer import Viewer
 from napari.types import ImageData, LabelsData, LayerData
-import napari
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
 import pandas as pd
 from tifffile import TiffFile, TiffFrame
+from skimage import restoration, morphology, filters, segmentation, measure
+import scipy
+
+segmentation.clear_border
 
 FLUOROPHORE_LIST_PATH = Path(__file__).parent / "fluorophore_list.json"
 
@@ -63,6 +66,32 @@ class PathScene:
         """
         path_str, scene = tup
         return cls(path=Path(path_str), scene=scene)
+
+def combine_masks(mask_layers: Iterable[Labels]) -> np.ndarray:
+    """
+    zip all masks together bitwise
+    """
+    mask_data = [l.data.squeeze().astype(bool) for l in mask_layers]
+    shape = mask_data[0].shape
+    assert all(d.shape == shape for d in mask_data)
+    out = np.zeros(shape).astype(np.uint8)
+    for i, data in enumerate(mask_data):
+        out[data] |= 1<<i
+    return out
+
+
+def load_masks(condenced_masks: np.ndarray, names: list[str], **kwargs) -> list[Labels]:
+    """
+    kwargs are passed to labels
+    """
+    out: list[Labels] = []
+    for i, name in enumerate(names):
+        out.append(Labels(
+            data=((condenced_masks & 1 << i) != 0).astype(np.uint8),
+            name=name,
+            **kwargs
+        ))
+    return out
 
 
 def generate_random_key(key_path: Path, image_paths: Iterable[Path]):
@@ -153,7 +182,7 @@ def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None) -> 
             xdim = _xy_voxel_size(first_page.tags, "XResolution")
             data = series.asarray()
         names = [f"raw-{f}-channel" for f in range(data.shape[1])]
-        viewer.add_image(data, channel_axis=1, scale=(zdim, ydim, xdim), name=names)
+        viewer.add_image(data, channel_axis=1, scale=(zdim, ydim, xdim), name=names, metadata={"scene_index": scene_num})
         return viewer
     raise ValueError(f"{image_path.suffix} not known")
 
@@ -217,7 +246,7 @@ def _get_fluorophers_image_series(viewer: Viewer) -> pd.Series:
     # add integers in case flour is not known
     int_padded_known_fluors = [str(i) for i in range(50)] + known_fluors
     for layer in img_layers:
-        regex_match = re.match(f"^raw-(.+)-channel$", layer.name)
+        regex_match = re.match(r"^raw-(.+)-channel$", layer.name)
         if regex_match is None:
             continue
         fluor = regex_match.group(1)
@@ -274,7 +303,7 @@ def save_mip(viewer: Viewer, out_path: Path, zrange: tuple[int| None, int | None
     dims_step = list(viewer.dims.current_step)
     dims_step[1] = 0 
     viewer.dims.current_step = dims_step
-    return viewer.screenshot(flash=False, path=out_path)
+    return viewer.screenshot(flash=False, path=str(out_path))
 
 
 def burn_in_contrast(
@@ -324,8 +353,8 @@ class AnalysisStep(Protocol):
     A step in analysis which returns the image data and adds it to the
     """
 
-    def __call__(self, viewer: Viewer, layer: int | napari.layers.Layer, 
-                 name: str | None, *args, **kwargs) -> ImageData:
+    def __call__(self, viewer: Viewer, layer: int | Layer, 
+                 name: str | None = None, *args, **kwargs) -> Labels | Image:
         ...
 
 
@@ -334,34 +363,56 @@ def _make_analysis_step(
     doc: str,
     out_type: Literal["Image", "Labels"] = "Image",
     additive=False,
+    distance_params: list[str] | None = None,
 ) -> AnalysisStep:
     """
     takes a function that takes in image data and returns an AnalysisStep
     """
-
+    if distance_params is None:
+        distance_params = []
     def out_function(
-        viewer: Viewer, layer: int | napari.layers.Layer, *args, name: str | None = None,  **kwargs, 
-    ) -> LabelsData | ImageData:
-        if name is None:
-            name = function.__name__
-        if isinstance(layer, napari.layers.Layer):
+        viewer: Viewer, layer: int | Layer, name: str | None = None, *args, **kwargs, 
+    ) -> Labels | Image:
+        # set_default_layer
+        if isinstance(layer, Layer):
             pass
         elif layer >= 0:
-            layer = img_layer(viewer, layer)
+            layer =  img_layer(viewer, layer)
         else:
             layer = viewer.layers[layer]
+        # set defualt name
+        if name is None:
+            if "-" in layer.name:
+                name = "-".join([function.__name__] + layer.name.split("-")[1:])
+            else:
+                name = function.__name__
+        # rescale scalable params
+        for distance_param in distance_params:
+            unscaled_value = kwargs.get(distance_param)
+            if unscaled_value:
+                kwargs[distance_param] = tuple(int(e) for e in (unscaled_value / layer.scale).tolist())
+        # call function
         out_data = function(layer.data, *args, **kwargs)
+        if np.issubdtype(out_data.dtype, np.floating):
+            min_val = np.min(out_data)
+            max_val = np.max(out_data)
+            scaled_arr = (out_data - min_val) / (max_val - min_val) * np.iinfo(np.uint16).max
+            out_data = scaled_arr.astype(np.uint16)
+        if out_data.dtype == np.int8 and out_type == "Labels":
+            assert out_data.min() == 0
+            out_data = out_data.astype(np.uint8)
         if out_type == "Image":
             new_layer = viewer.add_image(out_data, name=name)
+            if isinstance(new_layer, list):
+                raise ValueError()
             if additive:
-                new_layer.additive = True
+                new_layer.blending = "additive"
         elif out_type == "Labels":
             new_layer = viewer.add_labels(out_data, name=name)
             new_layer.contour = 1
         new_layer.translate = layer.translate
         new_layer.scale = layer.scale
-        return out_data
-
+        return new_layer
     out_function.__doc__ = doc
     return out_function
 
@@ -370,21 +421,89 @@ def print_contrast_limits(viewer: Viewer):
     """
     prints out the contrast limits of the last image in a nice way
     """
-    contrast_min, contrast_max = viewer.layers[-1].contrast_limits
+    layer = viewer.layers[-1]
+    if not isinstance(layer, Image):
+        print("last layser is  not an image")
+        return
+    contrast_min, contrast_max = layer.contrast_limits
     print(f"{(contrast_min, contrast_max)=}")
 
+def ellipsoid_dialation(mask: np.ndarray, size: tuple[int, ...]) -> np.ndarray:
+    """
+    npix is the 3 dimentailnal shape
+    """
+    print(size)
+    kernel = restoration.ellipsoid_kernel(size, 1) != np.inf
+    return morphology.binary_dilation(mask, kernel)
+    
+def ellipsoid_erosion(mask: np.ndarray, size: tuple[int, ...]) -> np.ndarray:
+    """
+    npix is the 3 dimentailnal shape
+    """
+    print(size)
+    kernel = restoration.ellipsoid_kernel(size, 1) != np.inf
+    return morphology.binary_erosion(mask, kernel)
+
+def merge_errent_membrane_labels(mask, image, blur_sigma):
+    # get all edges between cell 
+    eroded = np.zeros(mask.shape).astype(np.uint8)
+    for lbl in range(1, mask.max() + 1):
+        eroded += scipy.ndimage.binary_erosion(mask == lbl)
+    edges = (mask != 0) - eroded
+    # edges = filters.sobel(mask) > 0
+    blured = nsbatwm.gaussian(image, blur_sigma)
+    thresh = filters.threshold_minimum(blured)
+    edges_image = (blured * edges)
+    low_edges = (0 < edges_image) & (edges_image < thresh)
+    low_edges[[0, -1], :, :] = 0 # ignre edge slices
+    lbl_mistakes, nlables = scipy.ndimage.label(low_edges, structure=np.ones((3, 3, 3)))
+    out = mask.copy()
+    for lbl_mistake in range(1, nlables+1):
+        lbl_mask = scipy.ndimage.binary_dilation(lbl_mistakes == lbl_mistake)
+        cells_in_lbl_mask = np.unique(out[lbl_mask])
+        if len(cells_in_lbl_mask) == 0:
+            continue
+        # set all cells in labels mask to the first
+        out[np.isin(out, cells_in_lbl_mask)] = cells_in_lbl_mask[0]
+
+
+    viewer.add_labels(low_edges)
+
+def remove_labels_on_edges(mask: np.ndarray, top_bottom=True):
+    """
+    sets all labels on bottom to 
+    """
+    print(top_bottom)
+    assert len(mask.shape) == 3
+    borders = np.zeros(shape=mask.shape, dtype=np.uint8)
+    if top_bottom:
+        borders[[0, -1], :, :] = 1
+    borders[:, [0, -1], :] = 1
+    borders[:, :, [0, -1]] = 1
+    lbls_on_edge = np.unique(mask[borders.astype(bool)])
+    out = mask.copy()
+    assert out is not mask
+    out[np.isin(mask, lbls_on_edge)] = 0
+    return out
+    
 
 blur = _make_analysis_step(
-    nsbatwm.gaussian_blur, "does a gaussian_blur with sigma as a kwarg"
+    scipy.ndimage.gaussian_filter, "does a gaussian_blur with sigma as a kwarg",
+    distance_params=["sigma"]
+)
+median = _make_analysis_step(
+    scipy.ndimage.median_filter, "Does a median_filter size is a kwarg",
+    distance_params=["size"]
 )
 contrast = _make_analysis_step(
-    burn_in_contrast,
+    burn_in_contrast, #type: ignore
     "Makes a new layer with enhanced contrast kwargs: contrast_min: float, contrast_max: float, knee: float | None=None",
 )
 label = _make_analysis_step(
     nsbatwm.voronoi_otsu_labeling,
     "spot_sigma: float=2, outline_sigma: float=2",
     out_type="Labels",
+    distance_params=["spot_sigma", "outline_sigma"]
 )
 
 threshold = _make_analysis_step(
@@ -393,8 +512,36 @@ threshold = _make_analysis_step(
     out_type="Labels",
 )
 tophat = _make_analysis_step(
-    nsbatwm.white_tophat,
-    "Does a white tophat to make more clear puncta: radius: float=2",
+    scipy.ndimage.white_tophat,
+    "Does a white tophat to make more clear puncta: size: float=2",
     out_type="Image",
-    additive=True
+    additive=True,
+    distance_params=["size"]
+)
+
+binary_dilation = _make_analysis_step(
+    ellipsoid_dialation, #type: ignore
+    "shape is the 3d shape of the dialation ball",
+    "Labels",
+    distance_params=["size"]
+)
+
+binary_erosion = _make_analysis_step(
+    ellipsoid_erosion, #type: ignore
+    "shape is the 3d shape of the dialation ball",
+    "Labels",
+    distance_params=["size"]
+)
+
+within_membranes = _make_analysis_step(
+    nsbatwm.local_minima_seeded_watershed,
+    "spot_sigma, outline_sigma: float=0",
+    out_type="Labels",
+    distance_params=["spot_sigma", "outline_sigma"]
+)
+
+clear_edges = _make_analysis_step(
+    remove_labels_on_edges,
+    "top_bottom can be on or off",
+    "Labels"
 )
