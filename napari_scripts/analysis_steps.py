@@ -2,6 +2,7 @@
 Steps for analysing images
 """
 
+from __future__ import annotations
 from typing import Protocol, Callable, Literal, cast
 
 import numpy as np
@@ -80,13 +81,14 @@ def _make_analysis_step(
     out_type: Literal["Image", "Labels"] = "Image",
     additive=False,
     show=True,
-    distance_params: list[str] | None = None,
+    distance_params: dict[str, bool] | None = None,
 ) -> AnalysisStep:
     """
     takes a function that takes in image data and returns an AnalysisStep
+    distance params are all of the params related to distance and whether to round them after being scaled
     """
     if distance_params is None:
-        distance_params = []
+        distance_params = {}
 
     def out_function(
         viewer: Viewer,
@@ -95,6 +97,9 @@ def _make_analysis_step(
         *args,
         **kwargs,
     ) -> Labels | Image:
+        # remove kwargs that should not be passed to function
+        if "show" in kwargs:
+            del kwargs["show"]
         # set_default_layer
         if isinstance(layer, Layer):
             pass
@@ -113,9 +118,17 @@ def _make_analysis_step(
             unscaled_value = kwargs.get(distance_param)
             scaled_value = kwargs.get(f"pix_{distance_param}")
             if unscaled_value:
-                kwargs[distance_param] = tuple((unscaled_value / layer.scale).tolist())
+                if distance_params[distance_param]:
+                    kwargs[distance_param] = tuple((unscaled_value / layer.scale).round().astype(int).tolist())
+                else:
+                    kwargs[distance_param] = tuple((unscaled_value / layer.scale).tolist())
             elif scaled_value:
+                # round scaled value if neccisary
+                if distance_params[distance_param]:
+                    scaled_value = int(round(scaled_value))
                 kwargs[distance_param] = scaled_value
+            if f"pix_{distance_param}" in kwargs:
+                del kwargs[f"pix_{distance_param}"]
         # call function
         out_data = function(layer.data, *args, **kwargs)
         if np.issubdtype(out_data.dtype, np.floating):
@@ -255,7 +268,7 @@ def blur(
     return _make_analysis_step(
         ndi.gaussian_filter,  # type: ignore
         name_prefix="blur",
-        distance_params=["sigma"],
+        distance_params={"sigma": False},
     )(
         viewer=viewer,
         layer=layer,
@@ -286,7 +299,7 @@ def median(
     return _make_analysis_step(
         inner_filter,  # type: ignore
         name_prefix="median",
-        distance_params=["size"],
+        distance_params={"size": False},
     )(viewer=viewer, layer=layer, name=name, size=size, pix_size=pix_size, show=show)
 
 
@@ -347,7 +360,7 @@ def find_blobs(
         nsbatwm.voronoi_otsu_labeling,
         name_prefix="blobs",
         out_type="Labels",
-        distance_params=["outline_sigma", "spot_sigma"],
+        distance_params={"outline_sigma": False, "spot_sigma": False},
     )(
         viewer=viewer,
         layer=layer,
@@ -396,8 +409,8 @@ def tophat(
     out = _make_analysis_step(
         ndi.white_tophat,  # type: ignore
         name_prefix="tophat",
-        out_type="Labels",
-        distance_params=["size"],
+        out_type="Image",
+        distance_params={"size": True},
     )(viewer=viewer, layer=layer, name=name, size=size, pix_size=pix_size, show=show)
     if isinstance(out, Labels):
         raise ValueError()
@@ -419,7 +432,7 @@ def binary_dilation(
         lambda mask, size: ellipsoid_dialation_erosion(mask, size, "dialation"),
         name_prefix="dialation",
         out_type="Labels",
-        distance_params=["size"],
+        distance_params={"size": False},
     )(viewer=viewer, layer=layer, name=name, size=size, pix_size=pix_size, show=show)
     if isinstance(out, Image):
         raise ValueError()
@@ -441,7 +454,7 @@ def binary_erosion(
         lambda mask, size: ellipsoid_dialation_erosion(mask, size, "erosion"),
         name_prefix="erosion",
         out_type="Labels",
-        distance_params=["size"],
+        distance_params={"size": False},
     )(viewer=viewer, layer=layer, name=name, size=size, pix_size=pix_size, show=show)
     if isinstance(out, Image):
         raise ValueError()
@@ -471,7 +484,7 @@ def within_membranes(
         nsbatwm.local_minima_seeded_watershed,
         name_prefix="cells",
         out_type="Labels",
-        distance_params=["outline_sigma", "spot_sigma"],
+        distance_params={"outline_sigma": False, "spot_sigma": False},
     )(
         viewer=viewer,
         layer=layer,
@@ -517,7 +530,7 @@ def merge_dim_edged_labels(
         _merge_dim_edged_labels,
         name_prefix="bright_edges",
         out_type="Labels",
-        distance_params=["sigma"],
+        distance_params={"sigma": False},
     )(
         viewer=viewer,
         layer=layer,
