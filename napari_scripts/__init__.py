@@ -141,7 +141,7 @@ def catch_lab_server_paths(path: Path) -> Path:
     return path
 
 
-def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None) -> Viewer:
+def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None, display=True) -> Viewer:
     """
     gets a viewer with the file opened at scene. tries reading czis or tiffs
     """
@@ -157,7 +157,7 @@ def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None) -> 
     image_path = catch_lab_server_paths(image_path)
     if display_num is None:
         display_num = scene_num
-    viewer = Viewer(title=f"napari scene {display_num}")
+    viewer = Viewer(title=f"napari scene {display_num}", show=display)
     if image_path.suffix == ".czi":
         for data, metadata, _ in reader_function_with_args(
             image_path, scene_index=scene_num, next_scene_inds=[]
