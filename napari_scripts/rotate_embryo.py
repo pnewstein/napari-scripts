@@ -2,6 +2,7 @@
 Some code to rotate the embryo so that the VNC is in the same position
 """
 
+from __future__ import annotations
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.ndimage import affine_transform
