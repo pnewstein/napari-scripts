@@ -9,7 +9,9 @@ from napari_3d_counter import Count3D, CellTypeConfig
 import napari_scripts as ns
 
 # Randomizes an order of reading scenes from multiple czi files
-rand_key_path = Path("rand_key.json")
+quant_dir = Path().home() / "count-cells"
+quant_dir.mkdir(parents=True, exist_ok=True)
+rand_key_path = quant_dir / "rand_key.json"
 czi_path = Path("/Users/peternewstein/Downloads/Data-backup/488cmyc555pmad647eve_25c.czi")
 
 czi_path = Path("/Volumes/DoeLab65TB/lab_member_data/Peter Newstein/data/a06c_connect_1/a06c_empty-405brp488eve555v5647ha-1l_airy.czi")
@@ -27,7 +29,7 @@ viewer = ns.get_random_viewer(rand_key_path, i)
 
 # or read scene i from the czi_path
 i = 0 
-viewer = ns.get_viewer_from_file(czi_path, i, hide_scene_num=False)
+viewer = ns.get_viewer_from_file(czi_path, i, display_num=0)
 
 # set up the keybindings for the different views
 ns.bind_key(viewer, ["__mg", "_k__"])
