@@ -9,7 +9,7 @@ import numpy as np
 from napari import Viewer
 from napari.layers import Layer, Image, Labels
 from napari.types import ImageData, LabelsData
-from skimage import restoration, morphology, filters
+from skimage import restoration, morphology, filters, segmentation
 import scipy.ndimage as ndi
 import pandas as pd
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
@@ -119,9 +119,13 @@ def _make_analysis_step(
             scaled_value = kwargs.get(f"pix_{distance_param}")
             if unscaled_value:
                 if distance_params[distance_param]:
-                    kwargs[distance_param] = tuple((unscaled_value / layer.scale).round().astype(int).tolist())
+                    kwargs[distance_param] = tuple(
+                        (unscaled_value / layer.scale).round().astype(int).tolist()
+                    )
                 else:
-                    kwargs[distance_param] = tuple((unscaled_value / layer.scale).tolist())
+                    kwargs[distance_param] = tuple(
+                        (unscaled_value / layer.scale).tolist()
+                    )
             elif scaled_value:
                 # round scaled value if neccisary
                 if distance_params[distance_param]:
@@ -193,12 +197,13 @@ def ellipsoid_dialation_erosion(
 
 
 def maybe_merge_with_neighbors(
-    lbl: int, input_lbls: np.ndarray, dim_pix_mask: np.ndarray
+    lbl: int, input_lbls: np.ndarray, dim_pix_mask: np.ndarray, thresh: float
 ) -> np.ndarray:
     """
     recursivly called function that merges a cell with its largest border neighbor
     that has the majority of pixels less than threshold. It then recalculates that
     merging potential with the newly merged cell
+    thresh is the percentage of pixels that are in dim mask for a merge to occur
     """
     lbl_mask = input_lbls == lbl
     if lbl_mask.sum() == 0:
@@ -211,28 +216,27 @@ def maybe_merge_with_neighbors(
     sorted_neighbors = pd.Series(input_lbls[edge]).value_counts()
     for neighbor in sorted_neighbors.index:
         cell_cell_border_mask = (input_lbls == neighbor) & edge
-        if dim_pix_mask[cell_cell_border_mask].mean() > 0.5:
+        if dim_pix_mask[cell_cell_border_mask].mean() > thresh:
             # merge the pixels
             input_lbls[lbl_mask] = neighbor
             assert lbl not in input_lbls
             if neighbor == 0:
                 return input_lbls
-            return maybe_merge_with_neighbors(neighbor, input_lbls, dim_pix_mask)
+            return maybe_merge_with_neighbors(neighbor, input_lbls, dim_pix_mask, thresh)
     # iterated through all lables
     return input_lbls
 
 
 def _merge_dim_edged_labels(
-    input_lbls: np.ndarray, image: np.ndarray, sigma: tuple[float, ...]
+        input_lbls: np.ndarray, mask: np.ndarray, thresh: float, 
 ):
 
-    input_lbls = input_lbls.copy()
-    blured = nsbatwm.gaussian(image, sigma)
-    thresh = filters.threshold_minimum(blured)
-    dim_pix_mask = blured < thresh
+    input_lbls, _, _ = segmentation.relabel_sequential(input_lbls)
     # its important for this to be in order
-    for lbl in range(1, input_lbls.max() + 1):
-        input_lbls = maybe_merge_with_neighbors(lbl, input_lbls, dim_pix_mask)
+    n_cells = input_lbls.max()
+    for lbl in range(1, n_cells + 1):
+        input_lbls = maybe_merge_with_neighbors(lbl, input_lbls, mask, thresh)
+        print(lbl / n_cells)
     return cast(LabelsData, input_lbls)
 
 
@@ -501,16 +505,17 @@ def within_membranes(
 
 
 def clear_edges(
-    viewer: Viewer, layer: int | Layer, name: str | None = None, show=True
+    viewer: Viewer,
+    layer: int | Layer,
+    name: str | None = None,
+    show=True,
+    top_bottom=True,
 ) -> Labels:
     """
     uses otsu thresholding on the image
     """
     out = _make_analysis_step(_clear_edges, name_prefix="no_edge", out_type="Labels")(
-        viewer=viewer,
-        layer=layer,
-        name=name,
-        show=show,
+        viewer=viewer, layer=layer, name=name, show=show, top_bottom=top_bottom
     )
     if isinstance(out, Image):
         raise ValueError()
@@ -520,9 +525,8 @@ def clear_edges(
 def merge_dim_edged_labels(
     viewer: Viewer,
     layer: int | Layer,
-    image: ImageData,
-    sigma: float | None = None,
-    pix_sigma: float | None = None,
+    mask: LabelsData,
+    thresh: float = .5,
     name: str | None = None,
     show=True,
 ) -> Labels:
@@ -536,9 +540,8 @@ def merge_dim_edged_labels(
         layer=layer,
         name=name,
         show=show,
-        sigma=sigma,
-        pix_sigma=pix_sigma,
-        image=image
+        mask=mask,
+        thresh=thresh
     )
     if isinstance(out, Image):
         raise ValueError()

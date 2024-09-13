@@ -18,6 +18,8 @@ from napari.viewer import Viewer
 from tifffile import TiffFile, TiffFrame
 
 from napari_scripts.image_layers import img_layer
+
+# export analysis_steps
 from napari_scripts.analysis_steps import (
     blur,
     median,
@@ -27,6 +29,9 @@ from napari_scripts.analysis_steps import (
     tophat,
     binary_dilation,
     binary_erosion,
+    within_membranes,
+    clear_edges,
+    merge_dim_edged_labels,
 )
 
 
@@ -141,7 +146,9 @@ def catch_lab_server_paths(path: Path) -> Path:
     return path
 
 
-def get_viewer_from_file(image_path: Path, scene_num: int, display_num=None, display=True) -> Viewer:
+def get_viewer_from_file(
+    image_path: Path, scene_num: int, display_num=None, display=True
+) -> Viewer:
     """
     gets a viewer with the file opened at scene. tries reading czis or tiffs
     """
