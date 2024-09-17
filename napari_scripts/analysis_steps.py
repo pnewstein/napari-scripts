@@ -206,7 +206,7 @@ def maybe_merge_with_neighbors(
     thresh is the percentage of pixels that are in dim mask for a merge to occur
     """
     lbl_mask = input_lbls == lbl
-    if lbl_mask.sum() == 0:
+    if not np.any(lbl_mask):
         return input_lbls
     expanded = ndi.binary_dilation(lbl_mask)
     edge = expanded & np.logical_not(lbl_mask)
@@ -214,6 +214,13 @@ def maybe_merge_with_neighbors(
     if frac_dim_edge == 0:
         return input_lbls
     sorted_neighbors = pd.Series(input_lbls[edge]).value_counts()
+    if len(sorted_neighbors) == 1:
+        # there is only one neighbor, so merge it in
+        neighbor = sorted_neighbors.index[0]
+        if neighbor != 0:
+            print(lbl, neighbor)
+            input_lbls[lbl_mask] = neighbor
+            return input_lbls
     for neighbor in sorted_neighbors.index:
         cell_cell_border_mask = (input_lbls == neighbor) & edge
         if dim_pix_mask[cell_cell_border_mask].mean() > thresh:
