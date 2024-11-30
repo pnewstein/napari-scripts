@@ -15,9 +15,12 @@ from napari_czifile2 import reader_function_with_args
 from napari_czifile2.io import CZISceneFile
 from napari.layers import Image, Labels
 from napari.viewer import Viewer
+import napari
 from tifffile import TiffFile, TiffFrame
+from skimage.segmentation import watershed
+from magicgui.widgets import FunctionGui
 
-from napari_scripts.image_layers import img_layer
+from napari_scripts.image_layers import img_layer, _get_fluorophers_image_series
 
 # export analysis_steps
 from napari_scripts.analysis_steps import (
@@ -32,6 +35,12 @@ from napari_scripts.analysis_steps import (
     within_membranes,
     clear_edges,
     merge_dim_edged_labels,
+    local_minima_watershed,
+    remove_labels_enclaves,
+    manual_thresh,
+    local_maxima_to_points,
+    get_npix_at_label,
+    quantify_points_in_labels,
 )
 
 
@@ -179,7 +188,6 @@ def get_viewer_from_file(
         with TiffFile(image_path) as tif:
             series = tif.series[scene_num]
             axes = series.get_axes()
-            assert axes == "ZCYX"
             if tif.imagej_metadata is not None:
                 zdim = tif.imagej_metadata.get("spacing", 1.0)
             else:
@@ -193,13 +201,23 @@ def get_viewer_from_file(
             xdim = _xy_voxel_size(first_page.tags, "XResolution")
             data = series.asarray()
         names = [f"raw-{f}-channel" for f in range(data.shape[1])]
-        viewer.add_image(
-            data,
-            channel_axis=1,
-            scale=(zdim, ydim, xdim),
-            name=names,
-            metadata={"scene_index": scene_num},
-        )
+        if axes == "ZCYX":
+            viewer.add_image(
+                data,
+                channel_axis=1,
+                scale=(zdim, ydim, xdim),
+                name=names,
+                metadata={"scene_index": scene_num},
+            )
+        elif axes == "ZYX":
+            viewer.add_image(
+                data,
+                scale=(zdim, ydim, xdim),
+                name="raw-1-channel",
+                metadata={"scene_index": scene_num},
+            )
+        else:
+            raise NotImplementedError(axes)
         return viewer
     raise ValueError(f"{image_path.suffix} not known")
 
@@ -280,3 +298,51 @@ def save_mip(
     dims_step[1] = 0
     viewer.dims.current_step = dims_step
     return viewer.screenshot(flash=False, path=str(out_path))
+
+
+def watershed_merge_or_split_labels(
+    labels_layer: napari.layers.Labels,
+    points_layer: napari.layers.Points,
+    image: napari.types.ImageData,
+):
+    """
+    takes two poins and merge or split lables
+    """
+    points = points_layer.data
+    labels = labels_layer.data
+    if len(points) != 2:
+        print("Wrong number of points")
+        return
+    points = points.astype(np.int64)
+    lbl1, lbl2 = labels[points[:, 0], points[:, 1], points[:, 2]]
+    lbl1_mask = labels == lbl1
+    if lbl1 != lbl2:
+        # merge them together
+        labels[lbl1_mask] = lbl2
+        labels_layer.data = labels
+        points_layer.data = np.array([])
+        return
+    markers = np.zeros(labels.shape)
+    for i, (px, py, pz) in enumerate(points, 1):
+        markers[px, py, pz] = i
+    new_neurons = watershed(image, markers=markers.astype(labels.dtype), mask=lbl1_mask)
+    new_cell_mask = new_neurons == 1
+    if new_cell_mask.sum() == 1 or (new_neurons == 2).sum() == 1:
+        # failed try on binarized image
+        new_neurons = watershed(lbl1_mask, markers=markers.astype(labels.dtype), mask=lbl1_mask)
+        new_cell_mask = new_neurons == 1
+    # get a new label
+    currently_used_labels = np.unique(np.array(labels))
+    possible_labels = np.arange(
+        currently_used_labels[-1] + 2
+    )  # get zero : 1+labels.max()
+    next_label = np.where(~np.isin(possible_labels, currently_used_labels))[0][0]
+    assert next_label not in currently_used_labels
+    labels[new_cell_mask] = next_label
+    labels_layer.data = labels
+    points_layer.data = np.array([])
+
+
+class WatershedMergeOrSplitLabels(FunctionGui):
+    def __init__(self):
+        super().__init__(watershed_merge_or_split_labels, call_button=True)

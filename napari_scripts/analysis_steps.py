@@ -6,10 +6,11 @@ from __future__ import annotations
 from typing import Protocol, Callable, Literal, cast
 
 import numpy as np
+from numpy.typing import NDArray
 from napari import Viewer
-from napari.layers import Layer, Image, Labels
-from napari.types import ImageData, LabelsData
-from skimage import restoration, morphology, filters, segmentation
+from napari.layers import Layer, Image, Labels, Points
+from napari.types import ImageData, LabelsData, PointsData
+from skimage import restoration, morphology, segmentation, measure
 import scipy.ndimage as ndi
 import pandas as pd
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
@@ -72,13 +73,13 @@ class AnalysisStep(Protocol):
         name: str | None = None,
         *args,
         **kwargs,
-    ) -> Labels | Image: ...
+    ) -> Labels | Image | Points: ...
 
 
 def _make_analysis_step(
     function: Callable[..., ImageData | LabelsData],
     name_prefix: str,
-    out_type: Literal["Image", "Labels"] = "Image",
+    out_type: Literal["Image", "Labels", "Points"] = "Image",
     additive=False,
     show=True,
     distance_params: dict[str, bool] | None = None,
@@ -96,7 +97,7 @@ def _make_analysis_step(
         name: str | None = None,
         *args,
         **kwargs,
-    ) -> Labels | Image:
+    ) -> Labels | Image | Points:
         # remove kwargs that should not be passed to function
         if "show" in kwargs:
             del kwargs["show"]
@@ -158,6 +159,8 @@ def _make_analysis_step(
                 out_data, name=name, translate=layer.translate, scale=layer.scale
             )
             new_layer.contour = 1
+        elif out_type == "Points":
+            new_layer = Points(out_data, name=name, translate=layer.translate, scale=layer.scale)
         if show:
             viewer.layers.append(new_layer)
         return new_layer
@@ -185,6 +188,9 @@ def ellipsoid_dialation_erosion(
     """
     npix is the 3 dimentailnal shape
     """
+    # clear top and bottom 
+    mask = mask.copy()
+    mask[[0, -1], :, :] = 0
     out = np.zeros(mask.shape, dtype=mask.dtype)
     kernel = restoration.ellipsoid_kernel(size, 1) != np.inf
     for lbl in np.unique(mask):
@@ -229,13 +235,17 @@ def maybe_merge_with_neighbors(
             assert lbl not in input_lbls
             if neighbor == 0:
                 return input_lbls
-            return maybe_merge_with_neighbors(neighbor, input_lbls, dim_pix_mask, thresh)
+            return maybe_merge_with_neighbors(
+                neighbor, input_lbls, dim_pix_mask, thresh
+            )
     # iterated through all lables
     return input_lbls
 
 
 def _merge_dim_edged_labels(
-        input_lbls: np.ndarray, mask: np.ndarray, thresh: float, 
+    input_lbls: np.ndarray,
+    mask: np.ndarray,
+    thresh: float,
 ):
 
     input_lbls, _, _ = segmentation.relabel_sequential(input_lbls)
@@ -265,6 +275,16 @@ def _clear_edges(mask: np.ndarray, top_bottom=True):
     return cast(LabelsData, out)
 
 
+def _blur(input_image: np.ndarray, sigma: tuple[float, float, float]) -> ImageData:
+    """
+    gauisan blur on image rescaled to fit in in the dtype
+    """
+
+    scale_max = np.iinfo(input_image.dtype).max
+    out_image = input_image * int(0.9 * scale_max / input_image.max())
+    return cast(ImageData, ndi.gaussian_filter(out_image, sigma))
+
+
 def blur(
     viewer: Viewer,
     layer: int | Layer,
@@ -277,7 +297,7 @@ def blur(
     performs a gauisan blur on layer. sigma is the std deviation of the gauisan blur
     """
     return _make_analysis_step(
-        ndi.gaussian_filter,  # type: ignore
+        _blur,  # type: ignore
         name_prefix="blur",
         distance_params={"sigma": False},
     )(
@@ -472,6 +492,153 @@ def binary_erosion(
     return out
 
 
+def _local_maxima_to_points(
+    data: NDArray, mask: NDArray, filter_neighbors=False
+) -> PointsData:
+    centroids = np.logical_and(morphology.local_maxima(data), mask)
+    unfiltered_points = np.array(np.where(centroids)).T
+    if not filter_neighbors:
+        return cast(PointsData, unfiltered_points)
+    filtered_points: list[np.ndarray] = []
+    for point in unfiltered_points:
+        pz, py, px = point
+        if pz + 1 == centroids.shape[0]:
+            coordsx = [px + 1, px, px + 1]
+            coordsy = [py, py + 1, py + 1]
+            coordsz = [pz, pz, pz]
+        else:
+            coordsx = [px + 1, px, px, px + 1, px, px + 1, px + 1]
+            coordsy = [py, py + 1, py, py + 1, py + 1, py, py + 1]
+            coordsz = [pz, pz, pz + 1, pz, pz + 1, pz + 1, pz + 1]
+        try:
+            has_neighbor = centroids[coordsz, coordsy, coordsx].sum()
+        except IndexError:
+            continue
+        if not has_neighbor:
+            filtered_points.append(point)
+    points = np.array(filtered_points)
+    return cast(PointsData, points)
+
+
+def local_maxima_to_points(
+    viewer: Viewer,
+    layer: int | Layer,
+    mask: NDArray,
+    name: str | None = None,
+    show=True,
+) -> Points:
+    """
+    removes things biger than size
+    """
+    out = _make_analysis_step(
+        _local_maxima_to_points,
+        name_prefix="erosion",
+        out_type="Points",
+        distance_params={"size": False},
+    )(viewer=viewer, layer=layer, name=name, show=show, mask=mask)
+    if isinstance(out, Image):
+        raise ValueError()
+    return out
+
+
+def remove_labels_enclaves(labels: Labels):
+    """
+    remove all of the labels that are completely within another label
+    """
+    lbls = labels.data
+    assert isinstance(lbls, np.ndarray)
+    for lbl in np.unique(lbls):
+        lbl_mask = lbls == lbl
+        dialated_mask = cast(NDArray[np.bool_], ndi.binary_dilation(lbl_mask))
+        lbl_and_neighbors = np.unique(lbls[dialated_mask]).tolist()
+        if len(lbl_and_neighbors) != 2:
+            continue
+        lbl_and_neighbors.pop(lbl_and_neighbors.index(lbl))
+        (other_lbl,) = lbl_and_neighbors
+        lbls[lbl_mask] = other_lbl
+
+
+def _local_minima_watershed(
+    outline_blured: np.ndarray, minima_blured: np.ndarray, mask: NDArray | None = None
+) -> LabelsData:
+    """
+    finds minima with minima_blured and uses that to seed a watershed from outline_blured
+    """
+    minimum_spots = measure.label(morphology.local_minima(minima_blured))
+    return cast(
+        LabelsData, segmentation.watershed(outline_blured, minimum_spots, mask=mask)
+    )
+
+
+def manual_thresh(
+    viewer: Viewer,
+    layer: int | Layer,
+    thresh: float,
+    name: str | None = None,
+    show=True,
+) -> Labels:
+    out = _make_analysis_step(
+        lambda layer, thresh: layer > thresh,
+        name_prefix=f"threshold {thresh}",
+        out_type="Labels",
+    )(
+        viewer=viewer,
+        layer=layer,
+        name=name,
+        thresh=thresh,
+        show=show,
+    )
+    assert isinstance(out, Labels)
+    return out
+
+def get_npix_at_label(lbls: Labels) -> pd.Series:
+    """
+    returns the number of pixels of each label (excluing zero)
+    """
+    out = pd.Series(lbls.data.ravel()).value_counts()
+    out.name = "Pixel count"
+    return out.drop(0)
+
+def quantify_points_in_labels(points: Points, lbls: Labels) -> pd.Series:
+    """
+    returns a series of how many points are in each label
+    """
+    out_series = pd.Series(0, name=points.name, index=np.unique(np.array(lbls.data)))
+    for coords in points.data:
+        pz, py, px = coords
+        out_series.loc[lbls.data[pz, py, px]] += 1
+    assert out_series.index[0] == 0
+    return out_series.drop(0)
+
+
+def local_minima_watershed(
+    viewer: Viewer,
+    layer: int | Layer,
+    minima_blured: np.ndarray,
+    name: str | None = None,
+    show=True,
+    mask: NDArray | None = None,
+) -> Labels:
+    """
+    does a local minimum seaded watershed on the two images
+    """
+    out = _make_analysis_step(
+        _local_minima_watershed,
+        name_prefix="cells",
+        out_type="Labels",
+        distance_params={"outline_sigma": False, "spot_sigma": False},
+    )(
+        viewer=viewer,
+        layer=layer,
+        name=name,
+        minima_blured=minima_blured,
+        show=show,
+        mask=mask,
+    )
+    assert isinstance(out, Labels)
+    return out
+
+
 def within_membranes(
     viewer: Viewer,
     layer: int | Layer,
@@ -533,7 +700,7 @@ def merge_dim_edged_labels(
     viewer: Viewer,
     layer: int | Layer,
     mask: LabelsData,
-    thresh: float = .5,
+    thresh: float = 0.5,
     name: str | None = None,
     show=True,
 ) -> Labels:
@@ -542,14 +709,7 @@ def merge_dim_edged_labels(
         name_prefix="bright_edges",
         out_type="Labels",
         distance_params={"sigma": False},
-    )(
-        viewer=viewer,
-        layer=layer,
-        name=name,
-        show=show,
-        mask=mask,
-        thresh=thresh
-    )
+    )(viewer=viewer, layer=layer, name=name, show=show, mask=mask, thresh=thresh)
     if isinstance(out, Image):
         raise ValueError()
     return out
