@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import random
 import json
 import os
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from napari_czifile2 import reader_function_with_args
@@ -184,6 +185,7 @@ def get_viewer_from_file(
             else:
                 layers = [add_image_out]
         return viewer
+    fluor_names: list[str] | None = None
     if image_path.suffix in (".tiff", ".tif"):
         with TiffFile(image_path) as tif:
             series = tif.series[scene_num]
@@ -200,7 +202,22 @@ def get_viewer_from_file(
             ydim = _xy_voxel_size(first_page.tags, "YResolution")
             xdim = _xy_voxel_size(first_page.tags, "XResolution")
             data = series.asarray()
-        names = [f"raw-{f}-channel" for f in range(data.shape[1])]
+            # try getting channel names
+            if tif.ome_metadata is not None:
+                mdata = ET.fromstring(tif.ome_metadata)
+                image = mdata[scene_num]
+                namespace = {"ome": next(iter(mdata.attrib.values())).split()[0]}
+                pixels = image.find("ome:Pixels", namespaces=namespace)
+                assert pixels is not None
+                channel_xml_mdatata = pixels.findall(
+                    "ome:Channel", namespaces=namespace
+                )
+                fluor_names = [c.attrib["Name"] for c in channel_xml_mdatata]
+        if fluor_names is None:
+            names = [f"raw-{f}-channel" for f in range(data.shape[1])]
+        else:
+            names = [f"raw-{n}-channel" for n in fluor_names]
+
         if axes == "ZCYX":
             viewer.add_image(
                 data,
@@ -213,7 +230,15 @@ def get_viewer_from_file(
             viewer.add_image(
                 data,
                 scale=(zdim, ydim, xdim),
-                name="raw-1-channel",
+                name=names[0],
+                metadata={"scene_index": scene_num},
+            )
+        elif axes == "CZYX":
+            viewer.add_image(
+                data,
+                channel_axis=0,
+                scale=(zdim, ydim, xdim),
+                name=names,
                 metadata={"scene_index": scene_num},
             )
         else:
@@ -329,7 +354,9 @@ def watershed_merge_or_split_labels(
     new_cell_mask = new_neurons == 1
     if new_cell_mask.sum() == 1 or (new_neurons == 2).sum() == 1:
         # failed try on binarized image
-        new_neurons = watershed(lbl1_mask, markers=markers.astype(labels.dtype), mask=lbl1_mask)
+        new_neurons = watershed(
+            lbl1_mask, markers=markers.astype(labels.dtype), mask=lbl1_mask
+        )
         new_cell_mask = new_neurons == 1
     # get a new label
     currently_used_labels = np.unique(np.array(labels))
