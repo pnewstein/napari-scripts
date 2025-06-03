@@ -12,8 +12,7 @@ import os
 import xml.etree.ElementTree as ET
 
 import numpy as np
-from napari_czifile2 import reader_function_with_args
-from napari_czifile2.io import CZISceneFile
+from aicspylibczi import CziFile
 from napari.layers import Image, Labels
 from napari.viewer import Viewer
 import napari
@@ -176,14 +175,44 @@ def get_viewer_from_file(
         display_num = scene_num
     viewer = Viewer(title=f"napari scene {display_num}", show=display)
     if image_path.suffix == ".czi":
-        for data, metadata, _ in reader_function_with_args(
-            image_path, scene_index=scene_num, next_scene_inds=[]
-        ):
-            add_image_out = viewer.add_image(data=data, **metadata)
-            if isinstance(add_image_out, list):
-                layers = add_image_out
-            else:
-                layers = [add_image_out]
+        czi = CziFile(image_path)
+        dims = list(czi.dims)
+        img, _ = czi.read_image(S=scene_num)
+        will_flat = np.array(img.shape) == 1
+        for axis in np.where(will_flat)[0][::-1]:
+            dims.pop(axis)
+        if "C" in dims:
+            channel_axis: int | None = dims.index("C")
+        else:
+            channel_axis = None
+        # get scaling and 
+        metadata = czi.meta
+        assert metadata is not None
+        distances = metadata.find("./Metadata/Scaling/Items")
+        assert distances is not None
+        spacings_dict: dict[str, float] = {}
+        for distance in distances:
+            value = distance.find("Value")
+            assert value is not None
+            assert value.text is not None
+            spacings_dict[next(iter(distance.items()))[-1]] = float(value.text) * 10e5
+        scale = (spacings_dict["Z"], spacings_dict["Y"], spacings_dict["X"])
+        display_settings = metadata.find("./Metadata/DisplaySetting/Channels")
+        assert display_settings is not None
+        names: list[str] | str = []
+        for channel in display_settings:
+            name = channel.attrib["Name"].split("-")[0]
+            names.append(f"raw-{name}-channel")
+        if len(names) == 1:
+            names = names[0]
+        viewer.add_image(
+            img.squeeze(),
+            channel_axis=channel_axis,
+            scale=scale,
+            name=names,
+            metadata={"scene_index": scene_num},
+        )
+
         return viewer
     fluor_names: list[str] | None = None
     if image_path.suffix in (".tiff", ".tif"):
