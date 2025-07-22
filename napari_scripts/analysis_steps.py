@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 from napari import Viewer
 from napari.layers import Layer, Image, Labels, Points
 from napari.types import ImageData, LabelsData, PointsData
-from skimage import restoration, morphology, segmentation, measure
+from skimage import restoration, morphology, segmentation, measure, feature
 import scipy.ndimage as ndi
 import pandas as pd
 import napari_segment_blobs_and_things_with_membranes as nsbatwm
@@ -160,7 +160,9 @@ def _make_analysis_step(
             )
             new_layer.contour = 1
         elif out_type == "Points":
-            new_layer = Points(out_data, name=name, translate=layer.translate, scale=layer.scale)
+            new_layer = Points(
+                out_data, name=name, translate=layer.translate, scale=layer.scale
+            )
         if show:
             viewer.layers.append(new_layer)
         return new_layer
@@ -188,7 +190,7 @@ def ellipsoid_dialation_erosion(
     """
     npix is the 3 dimentailnal shape
     """
-    # clear top and bottom 
+    # clear top and bottom
     mask = mask.copy()
     mask[[0, -1], :, :] = 0
     out = np.zeros(mask.shape, dtype=mask.dtype)
@@ -492,50 +494,31 @@ def binary_erosion(
     return out
 
 
-def _local_maxima_to_points(
-    data: NDArray, mask: NDArray, filter_neighbors=False
-) -> PointsData:
-    centroids = np.logical_and(morphology.local_maxima(data), mask)
-    unfiltered_points = np.array(np.where(centroids)).T
-    if not filter_neighbors:
-        return cast(PointsData, unfiltered_points)
-    filtered_points: list[np.ndarray] = []
-    for point in unfiltered_points:
-        pz, py, px = point
-        if pz + 1 == centroids.shape[0]:
-            coordsx = [px + 1, px, px + 1]
-            coordsy = [py, py + 1, py + 1]
-            coordsz = [pz, pz, pz]
-        else:
-            coordsx = [px + 1, px, px, px + 1, px, px + 1, px + 1]
-            coordsy = [py, py + 1, py, py + 1, py + 1, py, py + 1]
-            coordsz = [pz, pz, pz + 1, pz, pz + 1, pz + 1, pz + 1]
-        try:
-            has_neighbor = centroids[coordsz, coordsy, coordsx].sum()
-        except IndexError:
-            continue
-        if not has_neighbor:
-            filtered_points.append(point)
-    points = np.array(filtered_points)
-    return cast(PointsData, points)
-
 
 def local_maxima_to_points(
     viewer: Viewer,
     layer: int | Layer,
-    mask: NDArray,
+    threshold_abs: int,
+    min_distance=1,
     name: str | None = None,
     show=True,
 ) -> Points:
     """
-    removes things biger than size
+    converts local maxima to points
     """
     out = _make_analysis_step(
-        _local_maxima_to_points,
-        name_prefix="erosion",
+        feature.peak_local_max,
+        name_prefix="maxima",
         out_type="Points",
         distance_params={"size": False},
-    )(viewer=viewer, layer=layer, name=name, show=show, mask=mask)
+    )(
+        viewer=viewer,
+        layer=layer,
+        name=name,
+        show=show,
+        threshold_abs=threshold_abs,
+        min_distance=min_distance,
+    )
     if isinstance(out, Image):
         raise ValueError()
     return out
@@ -591,6 +574,7 @@ def manual_thresh(
     assert isinstance(out, Labels)
     return out
 
+
 def get_npix_at_label(lbls: Labels) -> pd.Series:
     """
     returns the number of pixels of each label (excluing zero)
@@ -598,6 +582,7 @@ def get_npix_at_label(lbls: Labels) -> pd.Series:
     out = pd.Series(lbls.data.ravel()).value_counts()
     out.name = "Pixel count"
     return out.drop(0)
+
 
 def quantify_points_in_labels(points: Points, lbls: Labels) -> pd.Series:
     """
