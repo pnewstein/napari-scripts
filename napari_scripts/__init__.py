@@ -10,12 +10,16 @@ import random
 import json
 import os
 import xml.etree.ElementTree as ET
+from itertools import count
 
 import numpy as np
 from aicspylibczi import CziFile
 from napari.layers import Image, Labels
 from napari.viewer import Viewer
 import napari
+from napari.layers._source import Source
+from napari.layers import Shapes
+
 from tifffile import TiffFile, TiffFrame
 from skimage.segmentation import watershed
 from magicgui.widgets import FunctionGui
@@ -142,6 +146,10 @@ def get_random_viewer(key_path: Path, img_num: int) -> Viewer:
         this_path_scene.path, this_path_scene.scene, display_num=img_num
     )
 
+def liner_threshold(data: np.ndarray, start: int, stop: int):
+    return data > np.linspace(start, stop, data.shape[-3])[:, None, None]
+
+    
 
 def catch_lab_server_paths(path: Path) -> Path:
     """
@@ -205,13 +213,16 @@ def get_viewer_from_file(
             names.append(f"raw-{name}-channel")
         if len(names) == 1:
             names = names[0]
-        viewer.add_image(
+        images = viewer.add_image(
             img.squeeze(),
             channel_axis=channel_axis,
             scale=scale,
             name=names,
+            projection_mode="max",
             metadata={"scene_index": scene_num},
         )
+        for image in images:
+            image._set_source(Source(path=str(image_path)))
 
         return viewer
     fluor_names: list[str] | None = None
@@ -248,7 +259,7 @@ def get_viewer_from_file(
             names = [f"raw-{n}-channel" for n in fluor_names]
 
         if axes == "ZCYX":
-            viewer.add_image(
+            images = viewer.add_image(
                 data,
                 channel_axis=1,
                 scale=(zdim, ydim, xdim),
@@ -256,22 +267,27 @@ def get_viewer_from_file(
                 metadata={"scene_index": scene_num},
             )
         elif axes == "ZYX":
-            viewer.add_image(
+            images = [viewer.add_image(
                 data,
                 scale=(zdim, ydim, xdim),
                 name=names[0],
+                projection_mode="max",
                 metadata={"scene_index": scene_num},
-            )
+            )]
         elif axes == "CZYX":
-            viewer.add_image(
+            images = viewer.add_image(
                 data,
                 channel_axis=0,
                 scale=(zdim, ydim, xdim),
+                projection_mode="max",
                 name=names,
                 metadata={"scene_index": scene_num},
             )
         else:
             raise NotImplementedError(axes)
+        for image in images:
+            image._set_source(Source(path=str(image_path)))
+
         return viewer
     raise ValueError(f"{image_path.suffix} not known")
 
@@ -352,6 +368,27 @@ def save_mip(
     dims_step[1] = 0
     viewer.dims.current_step = dims_step
     return viewer.screenshot(flash=False, path=str(out_path))
+
+
+def crop(viewer, start=0, stop: None|int = None):
+    eg_image = img_layer(viewer, 0)
+    if stop is None:
+        stop = eg_image.data.shape[-3]
+    shapes_layer = next(l for l in viewer.layers if isinstance(l, Shapes))
+    bbox = shapes_layer.data[0]
+    mins = np.floor(bbox.min(axis=0)).astype(int)
+    maxs = np.ceil(bbox.max(axis=0)).astype(int)
+    slices = (slice(start, stop), slice(mins[-2], maxs[-2]), slice(mins[-1], maxs[-1]))
+    image_layers: list[Image] = []
+    for i in count():
+        try:
+            image_layers.append(img_layer(viewer, i))
+        except IndexError:
+            break
+    for image_layer in image_layers:
+        image_layer.data = image_layer.data[slices]
+
+    
 
 
 def watershed_merge_or_split_labels(

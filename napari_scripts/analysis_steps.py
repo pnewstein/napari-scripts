@@ -283,7 +283,11 @@ def _blur(input_image: np.ndarray, sigma: tuple[float, float, float]) -> ImageDa
     """
 
     scale_max = np.iinfo(input_image.dtype).max
-    out_image = input_image * int(0.9 * scale_max / input_image.max())
+    scale_int = int(0.9 * scale_max / input_image.max())
+    if scale_int != 0:
+        out_image = input_image * int(0.9 * scale_max / input_image.max())
+    else:
+        out_image = input_image
     return cast(ImageData, ndi.gaussian_filter(out_image, sigma))
 
 
