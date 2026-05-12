@@ -3,7 +3,7 @@ Some scripts for managing napari
 """
 
 from __future__ import annotations
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Iterable, Sequence
 from dataclasses import dataclass
 import random
@@ -11,6 +11,7 @@ import json
 import os
 import xml.etree.ElementTree as ET
 from itertools import count
+import platform
 
 import numpy as np
 from aicspylibczi import CziFile
@@ -156,8 +157,14 @@ def catch_lab_server_paths(path: Path) -> Path:
     if a path is pointing to the unix lab server, converts to the lab server from windows
     else does nothing
     """
+    # catch macos path on windows
     if path.parts[:3] == ("\\", "Volumes", "DoeLab65TB") and os.name == "nt":
         image_path = Path("//10.128.169.11/DoeLab65TB") / Path(*path.parts[3:])
+        assert image_path.exists()
+        return image_path
+    # catch windows path on darwin
+    if len(path.parts) == 1 and platform.system() == "Darwin":
+        image_path = Path("/Volumes/DoeLab65TB") / Path(*PureWindowsPath(path).parts[1:])
         assert image_path.exists()
         return image_path
     return path
