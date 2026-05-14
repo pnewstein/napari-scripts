@@ -147,10 +147,10 @@ def get_random_viewer(key_path: Path, img_num: int) -> Viewer:
         this_path_scene.path, this_path_scene.scene, display_num=img_num
     )
 
+
 def liner_threshold(data: np.ndarray, start: int, stop: int):
     return data > np.linspace(start, stop, data.shape[-3])[:, None, None]
 
-    
 
 def catch_lab_server_paths(path: Path) -> Path:
     """
@@ -164,7 +164,9 @@ def catch_lab_server_paths(path: Path) -> Path:
         return image_path
     # catch windows path on darwin
     if len(path.parts) == 1 and platform.system() == "Darwin":
-        image_path = Path("/Volumes/DoeLab65TB") / Path(*PureWindowsPath(path).parts[1:])
+        image_path = Path("/Volumes/DoeLab65TB") / Path(
+            *PureWindowsPath(path).parts[1:]
+        )
         assert image_path.exists()
         return image_path
     return path
@@ -200,7 +202,7 @@ def get_viewer_from_file(
             channel_axis: int | None = dims.index("C")
         else:
             channel_axis = None
-        # get scaling and 
+        # get scaling and
         metadata = czi.meta
         assert metadata is not None
         distances = metadata.find("./Metadata/Scaling/Items")
@@ -256,6 +258,12 @@ def get_viewer_from_file(
                 namespace = {"ome": next(iter(mdata.attrib.values())).split()[0]}
                 pixels = image.find("ome:Pixels", namespaces=namespace)
                 assert pixels is not None
+                scale_str_or_none = (
+                    pixels.attrib.get("PhysicalSizeZ"),
+                    pixels.attrib.get("PhysicalSizeY"),
+                    pixels.attrib.get("PhysicalSizeX"),
+                )
+                zdim, ydim, xdim = [1 if s is None else float(s) for s in scale_str_or_none]
                 channel_xml_mdatata = pixels.findall(
                     "ome:Channel", namespaces=namespace
                 )
@@ -274,13 +282,15 @@ def get_viewer_from_file(
                 metadata={"scene_index": scene_num},
             )
         elif axes == "ZYX":
-            images = [viewer.add_image(
-                data,
-                scale=(zdim, ydim, xdim),
-                name=names[0],
-                projection_mode="max",
-                metadata={"scene_index": scene_num},
-            )]
+            images = [
+                viewer.add_image(
+                    data,
+                    scale=(zdim, ydim, xdim),
+                    name=names[0],
+                    projection_mode="max",
+                    metadata={"scene_index": scene_num},
+                )
+            ]
         elif axes == "CZYX":
             images = viewer.add_image(
                 data,
@@ -377,7 +387,7 @@ def save_mip(
     return viewer.screenshot(flash=False, path=str(out_path))
 
 
-def crop(viewer, start=0, stop: None|int = None):
+def crop(viewer, start=0, stop: None | int = None):
     eg_image = img_layer(viewer, 0)
     if stop is None:
         stop = eg_image.data.shape[-3]
@@ -394,8 +404,6 @@ def crop(viewer, start=0, stop: None|int = None):
             break
     for image_layer in image_layers:
         image_layer.data = image_layer.data[slices]
-
-    
 
 
 def watershed_merge_or_split_labels(
