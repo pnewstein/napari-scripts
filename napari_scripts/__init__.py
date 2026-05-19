@@ -238,7 +238,7 @@ def get_viewer_from_file(
     if image_path.suffix in (".tiff", ".tif"):
         with TiffFile(image_path) as tif:
             series = tif.series[scene_num]
-            axes = series.get_axes()
+            axes = series.axes
             if tif.imagej_metadata is not None:
                 zdim = tif.imagej_metadata.get("spacing", 1.0)
             else:
