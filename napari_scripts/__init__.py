@@ -169,6 +169,10 @@ def catch_lab_server_paths(path: Path) -> Path:
         )
         assert image_path.exists()
         return image_path
+    # catch darwin path on linux:
+    if path.parts[1] == "Volumes" and platform.system() == "Linux":
+        image_path = Path("/mnt/z/") / Path(*path.parts[3:])
+        return image_path
     return path
 
 
