@@ -202,6 +202,8 @@ def get_viewer_from_file(
             channel_axis: int | None = dims.index("C")
         else:
             channel_axis = None
+        if any(s not in dims for s in "XYZ"):
+            raise ValueError("must have XYZ")
         # get scaling and
         metadata = czi.meta
         assert metadata is not None
@@ -228,6 +230,7 @@ def get_viewer_from_file(
             scale=scale,
             name=names,
             projection_mode="max",
+            units="um",
             metadata={"scene_index": scene_num},
         )
         for image in images:
@@ -288,6 +291,7 @@ def get_viewer_from_file(
                     scale=(zdim, ydim, xdim),
                     name=names[0],
                     projection_mode="max",
+                    units="um",
                     metadata={"scene_index": scene_num},
                 )
             ]
@@ -297,6 +301,7 @@ def get_viewer_from_file(
                 channel_axis=0,
                 scale=(zdim, ydim, xdim),
                 projection_mode="max",
+                units="um",
                 name=names,
                 metadata={"scene_index": scene_num},
             )
