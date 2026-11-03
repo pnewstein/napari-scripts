@@ -195,6 +195,22 @@ def get_viewer_from_file(
     if display_num is None:
         display_num = scene_num
     viewer = Viewer(title=f"napari scene {display_num}", show=display)
+    if image_path.suffix == ".npz":
+        arrays = np.load(image_path)
+        datas: list[np.ndarray] = []
+        for name in arrays.keys():
+            if name == "scale":
+                scale = arrays["scale"]
+            else:
+                datas.append(arrays[name])
+        for i, data in enumerate(datas):
+            if i == 0:
+                viewer.add_image(data, scale=scale, projection_mode="max", name=name)
+            else:
+                viewer.add_image(
+                    data, scale=scale, projection_mode="max", blending="additive", name=name
+                )
+        return viewer
     if image_path.suffix == ".czi":
         czi = CziFile(image_path)
         dims = list(czi.dims)
