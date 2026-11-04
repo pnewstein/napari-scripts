@@ -198,6 +198,7 @@ def get_viewer_from_file(
     if image_path.suffix == ".npz":
         arrays = np.load(image_path)
         datas: dict[str, np.ndarray] = {}
+
         for name in arrays.keys():
             if name == "scale":
                 scale = arrays["scale"]
