@@ -197,13 +197,13 @@ def get_viewer_from_file(
     viewer = Viewer(title=f"napari scene {display_num}", show=display)
     if image_path.suffix == ".npz":
         arrays = np.load(image_path)
-        datas: list[np.ndarray] = []
+        datas: dict[str, np.ndarray] = {}
         for name in arrays.keys():
             if name == "scale":
                 scale = arrays["scale"]
             else:
-                datas.append(arrays[name])
-        for i, data in enumerate(datas):
+                datas[name] = arrays[name]
+        for i, (name, data) in enumerate(datas.items()):
             if i == 0:
                 viewer.add_image(data, scale=scale, projection_mode="max", name=name)
             else:
